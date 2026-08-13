@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Blue Dodge</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon_512.png">
+<link rel="apple-touch-icon" href="icon_512.png">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Blue Dodge">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    overflow: hidden;
+    height: 100%;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #gameCanvas {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<script>
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const WIDTH = 800;
+const HEIGHT = 600;
+
+const BLACK = "#000000";
+const RED = "#ff3c3c";
+const BLUE = "#3278ff";
+const GREEN = "#3ce664";
+const WHITE = "#ffffff";
+const GRAY = "#464646";
+
+// Adapte le canvas à l'écran du téléphone en conservant le ratio
+function resizeCanvas() {
+  const scale = Math.min(window.innerWidth / WIDTH, window.innerHeight / HEIGHT);
+  canvas.style.width = (WIDTH * scale) + "px";
+  canvas.style.height = (HEIGHT * scale) + "px";
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+// ============================================================
+// JOUEUR
+// ============================================================
+
+const PLAYER_SIZE = 32;
+const PLAYER_SPEED = 330.0;
+
+let player = { x: WIDTH / 2 - PLAYER_SIZE / 2, y: HEIGHT / 2 - PLAYER_SIZE / 2, w: PLAYER_SIZE, h: PLAYER_SIZE };
+
+// ============================================================
+// BOUTONS TACTILES
+// ============================================================
+
+const BUTTON_SIZE = 72;
+const BUTTON_MARGIN = 20;
+
+const buttonUp = { x: BUTTON_MARGIN + BUTTON_SIZE, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE * 2, w: BUTTON_SIZE, h: BUTTON_SIZE };
+const buttonLeft = { x: BUTTON_MARGIN, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE, w: BUTTON_SIZE, h: BUTTON_SIZE };
+const buttonDown = { x: BUTTON_MARGIN + BUTTON_SIZE, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE, w: BUTTON_SIZE, h: BUTTON_SIZE };
+const buttonRight = { x: BUTTON_MARGIN + BUTTON_SIZE * 2, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE, w: BUTTON_SIZE, h: BUTTON_SIZE };
+
+// ============================================================
+// ETAT DU JEU
+// ============================================================
+
+const MAX_LIVES = 3;
+let lives = MAX_LIVES;
+
+let level = 1;
+const MAX_LEVEL = 50;
+
+const LEVEL_TIME = 7.0;
+let levelTimer = 0.0;
+
+let waitingForClear = false;
+let gameOver = false;
+let victory = false;
+
+let respawnTimer = 0.0;
+const RESPAWN_DELAY = 0.8;
+
+let invincibleTimer = 0.0;
+const INVINCIBLE_TIME = 1.2;
+
+const RECTANGLE_MODELS = [
+  [150, 28],
+  [210, 30],
+  [280, 32],
+  [360, 34],
+  [470, 36]
+];
+
+let enemies = [];
+
+// ============================================================
+// UTILITAIRES
+// ============================================================
+
+function rand(min, max) { return Math.random() * (max - min) + min; }
+function randInt(min, max) { return Math.floor(rand(min, max + 1)); }
+function choice(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function inflate(rect, dw, dh) {
+  return { x: rect.x - dw / 2, y: rect.y - dh / 2, w: rect.w + dw, h: rect.h + dh };
+}
+
+// ============================================================
+// DIFFICULTE
+// ============================================================
+
+function getLevelEnemyCount(lvl) {
+  return Math.min(2 + Math.floor((lvl - 1) / 4), 13);
+}
+function getBlueSpeed(lvl) { return 190 + lvl * 7; }
+function getGreenChance(lvl) {
+  if (lvl < 5) return 0.0;
+  return Math.min(0.08 + (lvl - 5) * 0.006, 0.30);
+}
+function getGreenSpeed(lvl) { return 310 + lvl * 9; }
+
+// ============================================================
+// CREATION D'UN ENNEMI
+// ============================================================
+
+function createEnemy(forceType) {
+  let type = forceType;
+  if (!type) {
+    type = Math.random() < getGreenChance(level) ? "green" : "blue";
+  }
+
+  const [modelLength, modelThickness] = choice(RECTANGLE_MODELS);
+
+  let speed, color;
+  if (type === "green") {
+    speed = getGreenSpeed(level) * rand(0.90, 1.10);
+    color = GREEN;
+  } else {
+    speed = getBlueSpeed(level) * rand(0.85, 1.15);
+    color = BLUE;
+  }
+
+  const direction = choice(["horizontal", "vertical"]);
+  let x, y, dx, dy, w, h;
+
+  if (direction === "horizontal") {
+    if (Math.random() < 0.5) { x = -modelLength; dx = speed; }
+    else { x = WIDTH; dx = -speed; }
+    y = randInt(55, HEIGHT - 55 - modelThickness);
+    dy = 0;
+    w = modelLength; h = modelThickness;
+  } else {
+    if (Math.random() < 0.5) { y = -modelLength; dy = speed; }
+    else { y = HEIGHT; dy = -speed; }
+    x = randInt(55, WIDTH - 55 - modelThickness);
+    dx = 0;
+    w = modelThickness; h = modelLength;
+  }
+
+  return { x, y, dx, dy, w, h, direction, color, type, length: modelLength, thickness: modelThickness };
+}
+
+// ============================================================
+// JOUEUR - RESPAWN
+// ============================================================
+
+function playerIsSafeAt(candidate) {
+  const safe = inflate(candidate, 70, 70);
+  for (const e of enemies) {
+    if (rectsOverlap(safe, e)) return false;
+  }
+  return true;
+}
+
+function respawnPlayerSafe() {
+  for (let attempt = 0; attempt < 150; attempt++) {
+    const x = randInt(30, WIDTH - PLAYER_SIZE - 30);
+    const y = randInt(70, HEIGHT - PLAYER_SIZE - 30);
+    const candidate = { x, y, w: PLAYER_SIZE, h: PLAYER_SIZE };
+    if (playerIsSafeAt(candidate)) {
+      player.x = x;
+      player.y = y;
+      return;
+    }
+  }
+  player.x = WIDTH / 2 - PLAYER_SIZE / 2;
+  player.y = HEIGHT / 2 - PLAYER_SIZE / 2;
+}
+
+function resetPlayer() {
+  player.x = WIDTH / 2 - PLAYER_SIZE / 2;
+  player.y = HEIGHT / 2 - PLAYER_SIZE / 2;
+}
+
+// ============================================================
+// CREATION DU NIVEAU
+// ============================================================
+
+function createLevel() {
+  enemies = [];
+  const target = getLevelEnemyCount(level);
+  for (let i = 0; i < target; i++) {
+    let enemy = createEnemy();
+    let tries = 0;
+    const playerZone = inflate(player, 180, 180);
+    while (rectsOverlap(enemy, playerZone) && tries < 30) {
+      enemy = createEnemy();
+      tries++;
+    }
+    enemies.push(enemy);
+  }
+}
+
+// ============================================================
+// BOUTONS - DESSIN
+// ============================================================
+
+function drawButton(rect, direction) {
+  ctx.fillStyle = "#2d2d2d";
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.strokeStyle = "#6e6e6e";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  const s = 18;
+
+  ctx.fillStyle = WHITE;
+  ctx.beginPath();
+  if (direction === "up") {
+    ctx.moveTo(cx, cy - s); ctx.lineTo(cx - s, cy + s); ctx.lineTo(cx + s, cy + s);
+  } else if (direction === "down") {
+    ctx.moveTo(cx, cy + s); ctx.lineTo(cx - s, cy - s); ctx.lineTo(cx + s, cy - s);
+  } else if (direction === "left") {
+    ctx.moveTo(cx - s, cy); ctx.lineTo(cx + s, cy - s); ctx.lineTo(cx + s, cy + s);
+  } else {
+    ctx.moveTo(cx + s, cy); ctx.lineTo(cx - s, cy - s); ctx.lineTo(cx - s, cy + s);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+// ============================================================
+// INTERFACE
+// ============================================================
+
+function drawUI() {
+  ctx.fillStyle = WHITE;
+  ctx.font = "26px sans-serif";
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  ctx.fillText("Niveau " + level + " / 50", 20, 15);
+
+  ctx.fillText("Vies :", WIDTH - 170, 15);
+
+  for (let i = 0; i < MAX_LIVES; i++) {
+    const x = WIDTH - 105 + i * 30;
+    const y = 22;
+    if (i < lives) {
+      ctx.fillStyle = RED;
+      ctx.fillRect(x, y, 20, 20);
+    } else {
+      ctx.strokeStyle = GRAY;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, 20, 20);
+    }
+  }
+}
+
+function drawOverlayScreen(titleText, titleColor, subText) {
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  ctx.fillStyle = titleColor;
+  ctx.font = "bold 58px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(titleText, WIDTH / 2, HEIGHT / 2 - 45);
+
+  ctx.fillStyle = WHITE;
+  ctx.font = "26px sans-serif";
+  ctx.fillText(subText, WIDTH / 2, HEIGHT / 2 + 35);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+}
+
+// ============================================================
+// REDEMARRAGE
+// ============================================================
+
+function restartGame() {
+  lives = MAX_LIVES;
+  level = 1;
+  levelTimer = 0.0;
+  waitingForClear = false;
+  gameOver = false;
+  victory = false;
+  respawnTimer = 0.0;
+  invincibleTimer = 0.0;
+  resetPlayer();
+  createLevel();
+}
+
+// ============================================================
+// ENTREES (clavier + tactile)
+// ============================================================
+
+const keysDown = {};
+window.addEventListener("keydown", (e) => {
+  keysDown[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === "r") restartGame();
+});
+window.addEventListener("keyup", (e) => { keysDown[e.key.toLowerCase()] = false; });
+
+// Suivi des doigts actifs, pour un support multi-touch correct
+const activeTouches = new Map();
+
+function canvasPointFromEvent(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = WIDTH / rect.width;
+  const scaleY = HEIGHT / rect.height;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+function handleTouchStart(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = canvasPointFromEvent(t.clientX, t.clientY);
+    activeTouches.set(t.identifier, p);
+  }
+}
+function handleTouchMove(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = canvasPointFromEvent(t.clientX, t.clientY);
+    activeTouches.set(t.identifier, p);
+  }
+}
+function handleTouchEnd(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    activeTouches.delete(t.identifier);
+  }
+}
+canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
+canvas.addEventListener("touchend", handleTouchEnd, { passive: false });
+canvas.addEventListener("touchcancel", handleTouchEnd, { passive: false });
+
+// Support souris (pratique pour tester sur PC)
+let mouseDown = false;
+let mousePos = { x: 0, y: 0 };
+canvas.addEventListener("mousedown", (e) => {
+  mouseDown = true;
+  mousePos = canvasPointFromEvent(e.clientX, e.clientY);
+});
+canvas.addEventListener("mousemove", (e) => {
+  mousePos = canvasPointFromEvent(e.clientX, e.clientY);
+});
+window.addEventListener("mouseup", () => { mouseDown = false; });
+
+function getTouchControls() {
+  let up = false, down = false, left = false, right = false;
+
+  for (const p of activeTouches.values()) {
+    if (pointInRect(p.x, p.y, buttonUp)) up = true;
+    if (pointInRect(p.x, p.y, buttonDown)) down = true;
+    if (pointInRect(p.x, p.y, buttonLeft)) left = true;
+    if (pointInRect(p.x, p.y, buttonRight)) right = true;
+  }
+
+  if (mouseDown) {
+    if (pointInRect(mousePos.x, mousePos.y, buttonUp)) up = true;
+    if (pointInRect(mousePos.x, mousePos.y, buttonDown)) down = true;
+    if (pointInRect(mousePos.x, mousePos.y, buttonLeft)) left = true;
+    if (pointInRect(mousePos.x, mousePos.y, buttonRight)) right = true;
+  }
+
+  return { up, down, left, right };
+}
+
+// ============================================================
+// BOUCLE PRINCIPALE
+// ============================================================
+
+restartGame();
+
+let lastTime = performance.now();
+
+function loop(now) {
+  let dt = (now - lastTime) / 1000.0;
+  lastTime = now;
+  if (dt > 0.05) dt = 0.05;
+
+  if (gameOver || victory) {
+    ctx.fillStyle = BLACK;
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    ctx.strokeStyle = WHITE;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(0, 0, WIDTH - 1, HEIGHT - 1);
+
+    if (gameOver) {
+      drawOverlayScreen("GAME OVER", RED, "Touche R (ou rejoue) pour recommencer");
+    } else {
+      drawOverlayScreen("VICTOIRE !", GREEN, "Tu as terminé les 50 niveaux !");
+    }
+
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  // --------------------------------------------------------
+  // CONTROLES
+  // --------------------------------------------------------
+
+  let movingUp = keysDown["z"] || keysDown["arrowup"] || false;
+  let movingDown = keysDown["s"] || keysDown["arrowdown"] || false;
+  let movingLeft = keysDown["q"] || keysDown["arrowleft"] || false;
+  let movingRight = keysDown["d"] || keysDown["arrowright"] || false;
+
+  const touch = getTouchControls();
+  movingUp = movingUp || touch.up;
+  movingDown = movingDown || touch.down;
+  movingLeft = movingLeft || touch.left;
+  movingRight = movingRight || touch.right;
+
+  // --------------------------------------------------------
+  // JOUEUR
+  // --------------------------------------------------------
+
+  if (invincibleTimer > 0) invincibleTimer -= dt;
+  if (respawnTimer > 0) respawnTimer -= dt;
+
+  if (respawnTimer <= 0) {
+    let mx = 0, my = 0;
+    if (movingLeft) mx -= 1;
+    if (movingRight) mx += 1;
+    if (movingUp) my -= 1;
+    if (movingDown) my += 1;
+
+    if (mx !== 0 || my !== 0) {
+      const len = Math.sqrt(mx * mx + my * my);
+      mx /= len; my /= len;
+      player.x += mx * PLAYER_SPEED * dt;
+      player.y += my * PLAYER_SPEED * dt;
+    }
+  }
+
+  // --------------------------------------------------------
+  // BORDURE
+  // --------------------------------------------------------
+
+  const innerLeft = 3, innerTop = 3, innerRight = WIDTH - 3, innerBottom = HEIGHT - 3;
+  const outOfBounds = player.x < innerLeft || player.y < innerTop ||
+    player.x + player.w > innerRight || player.y + player.h > innerBottom;
+
+  if (outOfBounds && invincibleTimer <= 0) {
+    lives -= 1;
+    respawnPlayerSafe();
+    invincibleTimer = INVINCIBLE_TIME;
+    respawnTimer = RESPAWN_DELAY;
+    if (lives <= 0) gameOver = true;
+  }
+
+  // --------------------------------------------------------
+  // ENNEMIS - DEPLACEMENT
+  // --------------------------------------------------------
+
+  for (const e of enemies) {
+    e.x += e.dx * dt;
+    e.y += e.dy * dt;
+  }
+
+  // --------------------------------------------------------
+  // COLLISION
+  // --------------------------------------------------------
+
+  if (invincibleTimer <= 0) {
+    let collision = false;
+    for (const e of enemies) {
+      if (rectsOverlap(player, e)) { collision = true; break; }
+    }
+    if (collision) {
+      lives -= 1;
+      respawnPlayerSafe();
+      invincibleTimer = INVINCIBLE_TIME;
+      respawnTimer = RESPAWN_DELAY;
+      if (lives <= 0) gameOver = true;
+    }
+  }
+
+  // --------------------------------------------------------
+  // SUPPRESSION DES ENNEMIS HORS ECRAN
+  // --------------------------------------------------------
+
+  enemies = enemies.filter(e => !(e.x + e.w < 0 || e.x > WIDTH || e.y + e.h < 0 || e.y > HEIGHT));
+
+  // --------------------------------------------------------
+  // PROGRESSION
+  // --------------------------------------------------------
+
+  if (!waitingForClear) {
+    levelTimer += dt;
+    const requiredTime = LEVEL_TIME + level * 0.15;
+    if (levelTimer >= requiredTime) waitingForClear = true;
+  } else {
+    if (enemies.length === 0) {
+      if (level < MAX_LEVEL) {
+        level += 1;
+        levelTimer = 0.0;
+        waitingForClear = false;
+        respawnPlayerSafe();
+        invincibleTimer = 0.8;
+        createLevel();
+      } else {
+        victory = true;
+      }
+    }
+  }
+
+  // --------------------------------------------------------
+  // CREATION DES ENNEMIS
+  // --------------------------------------------------------
+
+  if (!waitingForClear) {
+    const targetCount = getLevelEnemyCount(level);
+    while (enemies.length < targetCount) {
+      enemies.push(createEnemy());
+    }
+  }
+
+  // --------------------------------------------------------
+  // AFFICHAGE
+  // --------------------------------------------------------
+
+  ctx.fillStyle = BLACK;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  for (const e of enemies) {
+    ctx.fillStyle = e.color;
+    ctx.fillRect(e.x, e.y, e.w, e.h);
+  }
+
+  if (invincibleTimer <= 0 || Math.floor(invincibleTimer * 10) % 2 === 0) {
+    ctx.fillStyle = RED;
+    ctx.fillRect(player.x, player.y, player.w, player.h);
+  }
+
+  ctx.strokeStyle = WHITE;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(0, 0, WIDTH - 1, HEIGHT - 1);
+
+  drawUI();
+
+  if (waitingForClear) {
+    ctx.fillStyle = WHITE;
+    ctx.font = "22px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Nettoyage...", WIDTH / 2, 18);
+    ctx.textAlign = "left";
+  }
+
+  drawButton(buttonUp, "up");
+  drawButton(buttonLeft, "left");
+  drawButton(buttonDown, "down");
+  drawButton(buttonRight, "right");
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
