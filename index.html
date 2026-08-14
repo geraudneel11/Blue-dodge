@@ -343,7 +343,18 @@ function getGreenChance(lvl) { if (lvl < 5) return 0.0; return Math.min(0.08 + (
 function getPinkChance(lvl) { if (lvl < 8) return 0.0; return Math.min(0.05 + (lvl - 8) * 0.004, 0.18); }
 
 // ============================================================
-// ENNEMI ROSE - VIRAGES A 90 DEGRES
+// ENNEMI ROSE - VIRAGES A 90 DEGRES ("EFFET WAGON")
+//
+// Le rectangle rose ne pivote plus instantanement : quand son
+// avant atteint un point de pivot tire aleatoirement, l'avant se
+// fige a ce point pendant que l'arriere continue d'avancer, ce qui
+// fait "reculer" (retrecir) le segment d'origine. Au meme moment
+// un second segment nait au point de pivot dans la nouvelle
+// direction et grandit exactement de ce que le premier perd, de
+// sorte que la longueur totale (segment A + segment B) reste
+// toujours egale a la longueur initiale du rectangle. Quand le
+// segment A atteint une longueur de 0, le virage est termine et le
+// segment B devient le rectangle "normal" de l'ennemi.
 // ============================================================
 
 const DIR_ORDER = ["up", "right", "down", "left"];
@@ -353,8 +364,17 @@ function rotateDir(dir, clockwise) {
   return DIR_ORDER[next];
 }
 
+function dirVector(dir) {
+  if (dir === "right") return { x: 1, y: 0 };
+  if (dir === "left") return { x: -1, y: 0 };
+  if (dir === "down") return { x: 0, y: 1 };
+  return { x: 0, y: -1 }; // up
+}
+
+function isHorizontal(dir) { return dir === "left" || dir === "right"; }
+
 function applyDirection(e, dir, length, thickness, speed) {
-  if (dir === "left" || dir === "right") {
+  if (isHorizontal(dir)) {
     e.w = length; e.h = thickness;
     e.dx = dir === "right" ? speed : -speed;
     e.dy = 0;
@@ -365,15 +385,108 @@ function applyDirection(e, dir, length, thickness, speed) {
   }
 }
 
-function turnPinkEnemy(e) {
-  const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+// Choisit, le long de l'axe de deplacement courant, la coordonnee
+// (x pour horizontal, y pour vertical) ou le prochain virage se
+// declenchera. Tire aleatoirement avec une marge pour ne pas coller
+// aux bords de l'ecran.
+function pickNextTurnCoord(dir) {
+  if (isHorizontal(dir)) return rand(WIDTH * 0.18, WIDTH * 0.82);
+  return rand(HEIGHT * 0.18, HEIGHT * 0.82);
+}
+
+function getFrontCoord(e, dir) {
+  if (dir === "right") return e.x + e.w;
+  if (dir === "left") return e.x;
+  if (dir === "down") return e.y + e.h;
+  return e.y; // up
+}
+
+function hasReachedTurnCoord(e, dir) {
+  const front = getFrontCoord(e, dir);
+  if (dir === "right" || dir === "down") return front >= e.nextTurnCoord;
+  return front <= e.nextTurnCoord; // left / up
+}
+
+// Construit le rectangle d'un segment de longueur `len` accroche au
+// point de pivot `pivot`. mode "back": le pivot est l'AVANT du
+// segment (le segment s'etend vers l'arriere, dans -dir) - utilise
+// pour le segment A qui retrecit. mode "front": le pivot est
+// l'ARRIERE du segment (le segment s'etend vers l'avant, dans dir)
+// - utilise pour le segment B qui grandit.
+function buildSegmentRect(pivot, dir, len, thickness, mode) {
+  const v = dirVector(dir);
+  len = Math.max(0, len);
+  if (isHorizontal(dir)) {
+    let x;
+    if (mode === "back") x = v.x > 0 ? pivot.x - len : pivot.x;
+    else x = v.x > 0 ? pivot.x : pivot.x - len;
+    return { x, y: pivot.y - thickness / 2, w: len, h: thickness };
+  } else {
+    let y;
+    if (mode === "back") y = v.y > 0 ? pivot.y - len : pivot.y;
+    else y = v.y > 0 ? pivot.y : pivot.y - len;
+    return { x: pivot.x - thickness / 2, y, w: thickness, h: len };
+  }
+}
+
+// Renvoie les rectangles a dessiner/collisionner pour un ennemi rose :
+// un seul rectangle hors virage, deux (segment A + segment B, la
+// forme en "L") pendant un virage.
+function getPinkSegments(e) {
+  if (!e.turning) return [{ x: e.x, y: e.y, w: e.w, h: e.h }];
+  const segs = [];
+  if (e.turnSegALen > 0) {
+    segs.push(buildSegmentRect(e.turnPivot, e.turnOldDir, e.turnSegALen, e.thickness, "back"));
+  }
+  const segBLen = e.turnTotalLen - e.turnSegALen;
+  if (segBLen > 0) {
+    segs.push(buildSegmentRect(e.turnPivot, e.turnNewDir, segBLen, e.thickness, "front"));
+  }
+  return segs;
+}
+
+function startPinkTurn(e) {
   const clockwise = Math.random() < 0.5;
-  e.dir = rotateDir(e.dir, clockwise);
-  applyDirection(e, e.dir, e.length, e.thickness, e.speed);
-  e.x = cx - e.w / 2;
-  e.y = cy - e.h / 2;
+  const newDir = rotateDir(e.dir, clockwise);
+  const pivot = isHorizontal(e.dir)
+    ? { x: e.nextTurnCoord, y: e.y + e.h / 2 }
+    : { x: e.x + e.w / 2, y: e.nextTurnCoord };
+
+  e.turning = true;
+  e.turnOldDir = e.dir;
+  e.turnNewDir = newDir;
+  e.turnPivot = pivot;
+  e.turnTotalLen = e.length;
+  e.turnSegALen = e.length;
+
+  // fige e.dx/e.dy : pendant le virage le deplacement est gere
+  // directement par updatePinkEnemy via turnSegALen
+  e.dx = 0; e.dy = 0;
+}
+
+function finishPinkTurn(e) {
+  const pivot = e.turnPivot;
+  const newDir = e.turnNewDir;
+  e.dir = newDir;
+  applyDirection(e, newDir, e.turnTotalLen, e.thickness, e.speed);
+  // le segment B (arriere au pivot, avant a pivot + totalLen*dir) devient le rectangle normal
+  const backRect = buildSegmentRect(pivot, newDir, e.turnTotalLen, e.thickness, "front");
+  e.x = backRect.x; e.y = backRect.y;
+  e.turning = false;
   e.turnsLeft -= 1;
-  e.turnTimer = rand(0.5, 1.3);
+  if (e.turnsLeft > 0) e.nextTurnCoord = pickNextTurnCoord(e.dir);
+}
+
+function updatePinkEnemy(e, dt, speedMul) {
+  if (e.turning) {
+    e.turnSegALen -= e.speed * dt * speedMul;
+    if (e.turnSegALen <= 0) {
+      e.turnSegALen = 0;
+      finishPinkTurn(e);
+    }
+    return;
+  }
+  if (e.turnsLeft > 0 && hasReachedTurnCoord(e, e.dir)) startPinkTurn(e);
 }
 
 // ============================================================
@@ -421,15 +534,33 @@ function createEnemy(forceType) {
 
   if (type === "pink") {
     enemy.turnsLeft = 3;
-    enemy.turnTimer = rand(0.5, 1.3);
+    enemy.turning = false;
+    enemy.nextTurnCoord = pickNextTurnCoord(enemy.dir);
   }
 
   return enemy;
 }
 
+// Renvoie le ou les rectangles a utiliser pour le rendu/la collision
+// d'un ennemi : un seul rectangle normalement, deux (forme en "L")
+// pour un ennemi rose en cours de virage.
+function getEnemyRects(e) {
+  if (e.type === "pink") return getPinkSegments(e);
+  return [{ x: e.x, y: e.y, w: e.w, h: e.h }];
+}
+
+function enemyOverlapsRect(e, rect) {
+  for (const seg of getEnemyRects(e)) if (rectsOverlap(seg, rect)) return true;
+  return false;
+}
+
+function drawEnemy(e) {
+  for (const seg of getEnemyRects(e)) neonRect(seg.x, seg.y, seg.w, seg.h, e.color, 14);
+}
+
 function playerIsSafeAt(candidate) {
   const safe = inflate(candidate, 70, 70);
-  for (const e of enemies) if (rectsOverlap(safe, e)) return false;
+  for (const e of enemies) if (enemyOverlapsRect(e, safe)) return false;
   return true;
 }
 
@@ -517,7 +648,7 @@ function trySpawnPowerup() {
     const candidate = { x, y, w: size, h: size };
     const safeZone = inflate(candidate, 50, 50);
     let clear = true;
-    for (const e of enemies) if (rectsOverlap(safeZone, e)) { clear = false; break; }
+    for (const e of enemies) if (enemyOverlapsRect(e, safeZone)) { clear = false; break; }
     if (clear) {
       powerups.push({ x, y, w: size, h: size, type: def.type, color: def.color, symbol: def.symbol, life: 6.5, t: 0 });
       return;
@@ -599,7 +730,7 @@ function drawBlurredBackground() {
 function renderSceneFrame() {
   ctx.fillStyle = BLACK;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
-  for (const e of enemies) neonRect(e.x, e.y, e.w, e.h, e.color, 14);
+  for (const e of enemies) drawEnemy(e);
   neonRect(player.x, player.y, player.w, player.h, RED, 18);
   ctx.strokeStyle = "rgba(255,255,255,0.5)";
   ctx.lineWidth = 3;
@@ -871,7 +1002,7 @@ function renderGameplay() {
 
   drawPowerups();
 
-  for (const e of enemies) neonRect(e.x, e.y, e.w, e.h, e.color, 14);
+  for (const e of enemies) drawEnemy(e);
 
   if (invincibleTimer <= 0 || Math.floor(invincibleTimer * 10) % 2 === 0) {
     neonRect(player.x, player.y, player.w, player.h, RED, 20);
@@ -978,11 +1109,12 @@ function loop(now) {
   // --------------------------------------------------------
   const speedMul = slowTimer > 0 ? SLOW_FACTOR : 1;
   for (const e of enemies) {
-    e.x += e.dx * dt * speedMul;
-    e.y += e.dy * dt * speedMul;
-    if (e.type === "pink" && e.turnsLeft > 0) {
-      e.turnTimer -= dt;
-      if (e.turnTimer <= 0) turnPinkEnemy(e);
+    if (e.type === "pink") {
+      updatePinkEnemy(e, dt, speedMul);
+      if (!e.turning) { e.x += e.dx * dt * speedMul; e.y += e.dy * dt * speedMul; }
+    } else {
+      e.x += e.dx * dt * speedMul;
+      e.y += e.dy * dt * speedMul;
     }
   }
 
@@ -991,7 +1123,7 @@ function loop(now) {
   // --------------------------------------------------------
   if (invincibleTimer <= 0) {
     let collision = false;
-    for (const e of enemies) { if (rectsOverlap(player, e)) { collision = true; break; } }
+    for (const e of enemies) { if (enemyOverlapsRect(e, player)) { collision = true; break; } }
     if (collision) {
       loseLife();
       if (lives <= 0) { endGame(false); requestAnimationFrame(loop); return; }
@@ -1015,7 +1147,10 @@ function loop(now) {
   // --------------------------------------------------------
   // SUPPRESSION DES ENNEMIS HORS ECRAN
   // --------------------------------------------------------
-  enemies = enemies.filter((e) => !(e.x + e.w < 0 || e.x > WIDTH || e.y + e.h < 0 || e.y > HEIGHT));
+  enemies = enemies.filter((e) => {
+    const rects = getEnemyRects(e);
+    return rects.some((r) => !(r.x + r.w < 0 || r.x > WIDTH || r.y + r.h < 0 || r.y > HEIGHT));
+  });
 
   // --------------------------------------------------------
   // PROGRESSION
