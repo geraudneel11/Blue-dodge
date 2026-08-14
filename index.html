@@ -852,11 +852,10 @@ function drawEndScreen(won) {
   const titleText = won ? "VICTOIRE !" : "GAME OVER";
   drawNeonText(titleText, WIDTH / 2, HEIGHT * 0.26, Math.min(64, WIDTH * 0.09), titleColor, 26, "center", 900);
 
-  const subText = won ? "Tu as terminé les " + MAX_LEVEL + " niveaux !" : "Niveau atteint : " + level;
+  const subText = won ? "Tu as terminé les " + MAX_LEVEL + " niveaux !" : "Score final";
   drawNeonText(subText, WIDTH / 2, HEIGHT * 0.26 + Math.min(64, WIDTH * 0.09) * 0.7, Math.min(22, WIDTH * 0.032), WHITE, 8, "center", 500);
 
   drawNeonText("SCORE : " + Math.floor(score) + "   MEILLEUR : " + bestScore, WIDTH / 2, HEIGHT * 0.42, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 700);
-  drawNeonText("MEILLEUR NIVEAU : " + bestLevel, WIDTH / 2, HEIGHT * 0.42 + Math.min(20, WIDTH * 0.03) * 1.5, Math.min(20, WIDTH * 0.03), BLUE, 8, "center", 700);
 
   drawNeonButton(restartButton, "REJOUER", RED, 0.32);
   drawNeonButton(menuButton, "MENU", BLUE, 0.32);
