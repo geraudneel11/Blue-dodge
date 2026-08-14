@@ -44,9 +44,11 @@
 // CONFIGURATION GENERALE
 // ============================================================
 
-const GAME_VERSION = "v6";
+const GAME_VERSION = "v7";
 const STUDIO_NAME = "Saucisson Studios";
 const BEST_LEVEL_KEY = "blueDodgeBestLevel";
+const BEST_SCORE_KEY = "blueDodgeBestScore";
+const MUTED_KEY = "blueDodgeMuted";
 
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -55,6 +57,7 @@ const BLACK = "#000000";
 const RED = "#ff3c3c";
 const BLUE = "#3aa0ff";
 const GREEN = "#3ce664";
+const PINK = "#d054ff";
 const WHITE = "#ffffff";
 const GRAY = "#464646";
 
@@ -67,10 +70,55 @@ let HEIGHT = window.innerHeight;
 
 const STATE_MENU = "menu";
 const STATE_PLAYING = "playing";
+const STATE_PAUSED = "paused";
 const STATE_GAMEOVER = "gameover";
 const STATE_VICTORY = "victory";
 
 let gameState = STATE_MENU;
+
+// ============================================================
+// SON (Web Audio API, genere, sans fichiers)
+// ============================================================
+
+let audioCtx = null;
+let muted = localStorage.getItem(MUTED_KEY) === "1";
+
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* ignore */ }
+  } else if (audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+}
+
+function beep(freq, duration, type, volume) {
+  if (muted || !audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type || "square";
+  osc.frequency.value = freq;
+  const vol = volume === undefined ? 0.15 : volume;
+  const now = audioCtx.currentTime;
+  gain.gain.setValueAtTime(vol, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + duration);
+}
+
+function sfxClick() { beep(520, 0.08, "square", 0.12); }
+function sfxCollision() { beep(120, 0.25, "sawtooth", 0.20); }
+function sfxLevelUp() {
+  beep(660, 0.10, "square", 0.14);
+  setTimeout(() => beep(880, 0.12, "square", 0.14), 90);
+  setTimeout(() => beep(1100, 0.16, "square", 0.14), 180);
+}
+function sfxPowerup() { beep(950, 0.15, "triangle", 0.16); }
+
+function vibrate(pattern) {
+  if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) { /* ignore */ } }
+}
 
 // ============================================================
 // UTILITAIRES COULEUR / TEXTE / FORMES NEON
@@ -115,7 +163,6 @@ function drawNeonText(text, x, y, size, color, glow, align, weight) {
   ctx.globalAlpha = 1;
 }
 
-// Rectangle "neon tech" utilisé pour le joueur et les ennemis
 function neonRect(x, y, w, h, color, glow) {
   glow = glow === undefined ? 16 : glow;
   ctx.save();
@@ -161,6 +208,20 @@ function drawNeonButton(rect, label, color, fontScale) {
   drawNeonText(label, rect.x + rect.w / 2, rect.y + rect.h / 2, rect.h * fontScale, color, 14);
 }
 
+function drawIconButton(rect, symbol, color, active) {
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = active ? 18 : 8;
+  ctx.fillStyle = "rgba(6,10,14,0.55)";
+  roundRectPath(ctx, rect.x, rect.y, rect.w, rect.h, 10);
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.restore();
+  drawNeonText(symbol, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1, rect.h * 0.5, color, 10, "center", 700);
+}
+
 function pointInRect(px, py, r) {
   return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
 }
@@ -180,18 +241,18 @@ function resetPlayer() {
 }
 
 // ============================================================
-// BOUTONS TACTILES (mouvement) - fleches seules, pas de fond
+// BOUTONS TACTILES (mouvement) - fleches seules, zone cliquable inchangee
 // ============================================================
 
 const BUTTON_SIZE = 84;
 const BUTTON_MARGIN = 24;
 
 let buttonUp = {}, buttonLeft = {}, buttonDown = {}, buttonRight = {};
-
-// Boutons menu / fin de partie (recalcules a chaque resize)
 let playButton = {};
 let restartButton = {};
 let menuButton = {};
+let muteButton = {};
+let pauseButton = {};
 
 function computeLayout() {
   buttonUp = { x: BUTTON_MARGIN + BUTTON_SIZE, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE * 2, w: BUTTON_SIZE, h: BUTTON_SIZE };
@@ -208,6 +269,9 @@ function computeLayout() {
   const gap = 22;
   restartButton = { x: WIDTH / 2 - rbW - gap / 2, y: HEIGHT * 0.62, w: rbW, h: rbH };
   menuButton = { x: WIDTH / 2 + gap / 2, y: HEIGHT * 0.62, w: rbW, h: rbH };
+
+  muteButton = { x: WIDTH - 16 - 44 - 44 - 10, y: 14, w: 44, h: 44 };
+  pauseButton = { x: WIDTH - 16 - 44, y: 14, w: 44, h: 44 };
 }
 
 // ============================================================
@@ -221,6 +285,9 @@ let level = 1;
 const MAX_LEVEL = 50;
 let bestLevel = parseInt(localStorage.getItem(BEST_LEVEL_KEY) || "1", 10);
 
+let score = 0;
+let bestScore = parseInt(localStorage.getItem(BEST_SCORE_KEY) || "0", 10);
+
 const LEVEL_TIME = 7.0;
 let levelTimer = 0.0;
 let waitingForClear = false;
@@ -230,6 +297,11 @@ const RESPAWN_DELAY = 0.8;
 
 let invincibleTimer = 0.0;
 const INVINCIBLE_TIME = 1.2;
+const SHIELD_TIME = 4.0;
+
+let slowTimer = 0.0;
+const SLOW_TIME = 4.0;
+const SLOW_FACTOR = 0.45;
 
 const RECTANGLE_MODELS = [
   [150, 28],
@@ -240,12 +312,13 @@ const RECTANGLE_MODELS = [
 ];
 
 let enemies = [];
+let particles = [];
+let powerups = [];
+let powerupSpawnTimer = 6.0;
 
-function updateBestLevel() {
-  if (level > bestLevel) {
-    bestLevel = level;
-    localStorage.setItem(BEST_LEVEL_KEY, String(bestLevel));
-  }
+function updateBests() {
+  if (level > bestLevel) { bestLevel = level; localStorage.setItem(BEST_LEVEL_KEY, String(bestLevel)); }
+  if (Math.floor(score) > bestScore) { bestScore = Math.floor(score); localStorage.setItem(BEST_SCORE_KEY, String(bestScore)); }
 }
 
 // ============================================================
@@ -265,16 +338,64 @@ function inflate(rect, dw, dh) {
 
 function getLevelEnemyCount(lvl) { return Math.min(2 + Math.floor((lvl - 1) / 4), 13); }
 function getBlueSpeed(lvl) { return 190 + lvl * 7; }
-function getGreenChance(lvl) { if (lvl < 5) return 0.0; return Math.min(0.08 + (lvl - 5) * 0.006, 0.30); }
 function getGreenSpeed(lvl) { return 310 + lvl * 9; }
+function getGreenChance(lvl) { if (lvl < 5) return 0.0; return Math.min(0.08 + (lvl - 5) * 0.006, 0.30); }
+function getPinkChance(lvl) { if (lvl < 8) return 0.0; return Math.min(0.05 + (lvl - 8) * 0.004, 0.18); }
+
+// ============================================================
+// ENNEMI ROSE - VIRAGES A 90 DEGRES
+// ============================================================
+
+const DIR_ORDER = ["up", "right", "down", "left"];
+function rotateDir(dir, clockwise) {
+  const idx = DIR_ORDER.indexOf(dir);
+  const next = clockwise ? (idx + 1) % 4 : (idx + 3) % 4;
+  return DIR_ORDER[next];
+}
+
+function applyDirection(e, dir, length, thickness, speed) {
+  if (dir === "left" || dir === "right") {
+    e.w = length; e.h = thickness;
+    e.dx = dir === "right" ? speed : -speed;
+    e.dy = 0;
+  } else {
+    e.w = thickness; e.h = length;
+    e.dy = dir === "down" ? speed : -speed;
+    e.dx = 0;
+  }
+}
+
+function turnPinkEnemy(e) {
+  const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+  const clockwise = Math.random() < 0.5;
+  e.dir = rotateDir(e.dir, clockwise);
+  applyDirection(e, e.dir, e.length, e.thickness, e.speed);
+  e.x = cx - e.w / 2;
+  e.y = cy - e.h / 2;
+  e.turnsLeft -= 1;
+  e.turnTimer = rand(0.5, 1.3);
+}
+
+// ============================================================
+// CREATION D'UN ENNEMI
+// ============================================================
+
+function pickEnemyType() {
+  const r = Math.random();
+  const pinkChance = getPinkChance(level);
+  const greenChance = getGreenChance(level);
+  if (r < pinkChance) return "pink";
+  if (r < pinkChance + greenChance) return "green";
+  return "blue";
+}
 
 function createEnemy(forceType) {
-  let type = forceType;
-  if (!type) type = Math.random() < getGreenChance(level) ? "green" : "blue";
+  const type = forceType || pickEnemyType();
 
   const [modelLength, modelThickness] = choice(RECTANGLE_MODELS);
   let speed, color;
-  if (type === "green") { speed = getGreenSpeed(level) * rand(0.90, 1.10); color = GREEN; }
+  if (type === "pink") { speed = getGreenSpeed(level) * rand(0.90, 1.10); color = PINK; }
+  else if (type === "green") { speed = getGreenSpeed(level) * rand(0.90, 1.10); color = GREEN; }
   else { speed = getBlueSpeed(level) * rand(0.85, 1.15); color = BLUE; }
 
   const direction = choice(["horizontal", "vertical"]);
@@ -290,7 +411,20 @@ function createEnemy(forceType) {
     dx = 0; w = modelThickness; h = modelLength;
   }
 
-  return { x, y, dx, dy, w, h, direction, color, type };
+  const dir = direction === "horizontal" ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
+
+  const enemy = {
+    x, y, dx, dy, w, h, color, type,
+    length: modelLength, thickness: modelThickness,
+    speed, dir
+  };
+
+  if (type === "pink") {
+    enemy.turnsLeft = 3;
+    enemy.turnTimer = rand(0.5, 1.3);
+  }
+
+  return enemy;
 }
 
 function playerIsSafeAt(candidate) {
@@ -318,6 +452,112 @@ function createLevel() {
     let tries = 0;
     while (rectsOverlap(enemy, playerZone) && tries < 30) { enemy = createEnemy(); tries++; }
     enemies.push(enemy);
+  }
+}
+
+// ============================================================
+// PARTICULES
+// ============================================================
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = rand(60, 220);
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: rand(0.4, 0.9),
+      maxLife: 0.9,
+      color,
+      size: rand(3, 7)
+    });
+  }
+}
+
+function updateParticles(dt) {
+  for (const p of particles) {
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.94; p.vy *= 0.94;
+    p.life -= dt;
+  }
+  particles = particles.filter((p) => p.life > 0);
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const alpha = Math.max(0, p.life / p.maxLife);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// POWER-UPS
+// ============================================================
+
+const POWERUP_TYPES = [
+  { type: "shield", color: BLUE, symbol: "B" },
+  { type: "slow", color: GREEN, symbol: "R" },
+  { type: "life", color: RED, symbol: "+" }
+];
+
+function trySpawnPowerup() {
+  if (powerups.length > 0) return;
+  const def = choice(POWERUP_TYPES);
+  const size = 38;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const x = randInt(50, Math.max(51, WIDTH - 50 - size));
+    const y = randInt(90, Math.max(91, HEIGHT - 150 - size));
+    const candidate = { x, y, w: size, h: size };
+    const safeZone = inflate(candidate, 50, 50);
+    let clear = true;
+    for (const e of enemies) if (rectsOverlap(safeZone, e)) { clear = false; break; }
+    if (clear) {
+      powerups.push({ x, y, w: size, h: size, type: def.type, color: def.color, symbol: def.symbol, life: 6.5, t: 0 });
+      return;
+    }
+  }
+}
+
+function updatePowerups(dt) {
+  powerupSpawnTimer -= dt;
+  if (powerupSpawnTimer <= 0) {
+    trySpawnPowerup();
+    powerupSpawnTimer = rand(9, 15);
+  }
+  for (const p of powerups) { p.life -= dt; p.t += dt; }
+  powerups = powerups.filter((p) => p.life > 0);
+}
+
+function applyPowerup(p) {
+  sfxPowerup();
+  spawnParticles(p.x + p.w / 2, p.y + p.h / 2, p.color, 16);
+  if (p.type === "shield") {
+    invincibleTimer = Math.max(invincibleTimer, SHIELD_TIME);
+  } else if (p.type === "slow") {
+    slowTimer = SLOW_TIME;
+  } else if (p.type === "life") {
+    if (lives < MAX_LIVES) lives += 1; else score += 200;
+  }
+}
+
+function drawPowerups() {
+  for (const p of powerups) {
+    const pulse = 1 + 0.08 * Math.sin(p.t * 6);
+    const w = p.w * pulse, h = p.h * pulse;
+    const x = p.x + p.w / 2 - w / 2, y = p.y + p.h / 2 - h / 2;
+    ctx.save();
+    ctx.translate(x + w / 2, y + h / 2);
+    ctx.rotate(Math.PI / 4);
+    neonRect(-w / 2, -h / 2, w, h, p.color, 18);
+    ctx.restore();
+    drawNeonText(p.symbol, p.x + p.w / 2, p.y + p.h / 2 + 1, p.w * 0.5, WHITE, 6, "center", 900);
   }
 }
 
@@ -357,7 +597,6 @@ function drawBlurredBackground() {
 // ============================================================
 
 function renderSceneFrame() {
-  // Dessine une frame de jeu "propre" (sans overlay) pour servir de capture
   ctx.fillStyle = BLACK;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
   for (const e of enemies) neonRect(e.x, e.y, e.w, e.h, e.color, 14);
@@ -374,22 +613,38 @@ function goToMenu() {
 }
 
 function startGame() {
+  ensureAudio();
   lives = MAX_LIVES;
   level = 1;
+  score = 0;
   levelTimer = 0.0;
   waitingForClear = false;
   respawnTimer = 0.0;
   invincibleTimer = 0.0;
+  slowTimer = 0.0;
+  particles = [];
+  powerups = [];
+  powerupSpawnTimer = rand(7, 11);
   resetPlayer();
   createLevel();
   gameState = STATE_PLAYING;
 }
 
 function endGame(won) {
-  updateBestLevel();
+  updateBests();
   renderSceneFrame();
   captureBackgroundSnapshot();
   gameState = won ? STATE_VICTORY : STATE_GAMEOVER;
+}
+
+function loseLife() {
+  lives -= 1;
+  spawnParticles(player.x + player.w / 2, player.y + player.h / 2, RED, 18);
+  vibrate(80);
+  sfxCollision();
+  respawnPlayerSafe();
+  invincibleTimer = INVINCIBLE_TIME;
+  respawnTimer = RESPAWN_DELAY;
 }
 
 // ============================================================
@@ -399,12 +654,11 @@ function endGame(won) {
 const keysDown = {};
 window.addEventListener("keydown", (e) => {
   keysDown[e.key.toLowerCase()] = true;
-  if (e.key.toLowerCase() === "r" && (gameState === STATE_GAMEOVER || gameState === STATE_VICTORY)) {
-    startGame();
-  }
-  if ((e.key === "Enter" || e.key === " ") && gameState === STATE_MENU) {
-    startGame();
-  }
+  const k = e.key.toLowerCase();
+  if (k === "r" && (gameState === STATE_GAMEOVER || gameState === STATE_VICTORY)) startGame();
+  if ((e.key === "Enter" || e.key === " ") && gameState === STATE_MENU) startGame();
+  if ((k === "p" || e.key === "Escape") && gameState === STATE_PLAYING) gameState = STATE_PAUSED;
+  else if ((k === "p" || e.key === "Escape") && gameState === STATE_PAUSED) gameState = STATE_PLAYING;
 });
 window.addEventListener("keyup", (e) => { keysDown[e.key.toLowerCase()] = false; });
 
@@ -419,28 +673,44 @@ function canvasPointFromEvent(clientX, clientY) {
   return { x: clientX - rect.left, y: clientY - rect.top };
 }
 
-function handleMenuTap(p) {
+function handleGlobalTap(p) {
+  if (pointInRect(p.x, p.y, muteButton)) {
+    muted = !muted;
+    localStorage.setItem(MUTED_KEY, muted ? "1" : "0");
+    if (!muted) sfxClick();
+    return;
+  }
   if (gameState === STATE_MENU) {
-    if (pointInRect(p.x, p.y, playButton)) startGame();
-  } else if (gameState === STATE_GAMEOVER || gameState === STATE_VICTORY) {
-    if (pointInRect(p.x, p.y, restartButton)) startGame();
-    else if (pointInRect(p.x, p.y, menuButton)) goToMenu();
+    if (pointInRect(p.x, p.y, playButton)) { sfxClick(); startGame(); }
+    return;
+  }
+  if (gameState === STATE_PLAYING) {
+    if (pointInRect(p.x, p.y, pauseButton)) { sfxClick(); gameState = STATE_PAUSED; }
+    return;
+  }
+  if (gameState === STATE_PAUSED) {
+    if (pointInRect(p.x, p.y, restartButton)) { sfxClick(); gameState = STATE_PLAYING; }
+    else if (pointInRect(p.x, p.y, menuButton)) { sfxClick(); goToMenu(); }
+    return;
+  }
+  if (gameState === STATE_GAMEOVER || gameState === STATE_VICTORY) {
+    if (pointInRect(p.x, p.y, restartButton)) { sfxClick(); startGame(); }
+    else if (pointInRect(p.x, p.y, menuButton)) { sfxClick(); goToMenu(); }
   }
 }
 
 function handleTouchStart(e) {
   e.preventDefault();
+  ensureAudio();
   for (const t of e.changedTouches) {
     const p = canvasPointFromEvent(t.clientX, t.clientY);
     activeTouches.set(t.identifier, p);
-    handleMenuTap(p);
+    handleGlobalTap(p);
   }
 }
 function handleTouchMove(e) {
   e.preventDefault();
-  for (const t of e.changedTouches) {
-    activeTouches.set(t.identifier, canvasPointFromEvent(t.clientX, t.clientY));
-  }
+  for (const t of e.changedTouches) activeTouches.set(t.identifier, canvasPointFromEvent(t.clientX, t.clientY));
 }
 function handleTouchEnd(e) {
   e.preventDefault();
@@ -454,9 +724,10 @@ canvas.addEventListener("touchcancel", handleTouchEnd, { passive: false });
 let mouseDown = false;
 let mousePos = { x: 0, y: 0 };
 canvas.addEventListener("mousedown", (e) => {
+  ensureAudio();
   mouseDown = true;
   mousePos = canvasPointFromEvent(e.clientX, e.clientY);
-  handleMenuTap(mousePos);
+  handleGlobalTap(mousePos);
 });
 canvas.addEventListener("mousemove", (e) => { mousePos = canvasPointFromEvent(e.clientX, e.clientY); });
 window.addEventListener("mouseup", () => { mouseDown = false; });
@@ -495,16 +766,16 @@ window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", resize);
 
 // ============================================================
-// DESSIN DES FLECHES DE CONTROLE (sans fond, plus grandes)
+// FLECHES DE CONTROLE (reduites visuellement, zone cliquable inchangee)
 // ============================================================
 
 function drawArrow(rect, direction) {
   const cx = rect.x + rect.w / 2;
   const cy = rect.y + rect.h / 2;
-  const s = rect.w * 0.5;
+  const s = rect.w * 0.34;
   ctx.save();
   ctx.shadowColor = BLUE;
-  ctx.shadowBlur = 16;
+  ctx.shadowBlur = 14;
   ctx.fillStyle = "rgba(255,255,255,0.92)";
   ctx.beginPath();
   if (direction === "up") { ctx.moveTo(cx, cy - s); ctx.lineTo(cx - s, cy + s * 0.8); ctx.lineTo(cx + s, cy + s * 0.8); }
@@ -521,20 +792,21 @@ function drawArrow(rect, direction) {
 // ============================================================
 
 function drawUI() {
-  drawNeonText("NIVEAU " + level + " / " + MAX_LEVEL, 26, 34, 22, BLUE, 12, "left");
+  drawNeonText("NIVEAU " + level + " / " + MAX_LEVEL, 26, 34, 20, BLUE, 10, "left");
+  drawNeonText("SCORE " + Math.floor(score), WIDTH / 2, 34, 20, WHITE, 10, "center");
 
-  const labelW = 92;
-  drawNeonText("VIES", WIDTH - labelW - 100, 34, 20, RED, 10, "left");
   for (let i = 0; i < MAX_LIVES; i++) {
     const x = WIDTH - 95 + i * 30;
-    const y = 24;
+    const y = 68;
     if (i < lives) neonRect(x, y, 20, 20, RED, 12);
     else { ctx.strokeStyle = GRAY; ctx.lineWidth = 2; ctx.strokeRect(x, y, 20, 20); }
   }
 
-  if (waitingForClear) {
-    drawNeonText("NETTOYAGE...", WIDTH / 2, 34, 20, GREEN, 12);
-  }
+  drawIconButton(muteButton, muted ? "X" : "S", muted ? GRAY : GREEN, !muted);
+  drawIconButton(pauseButton, "II", BLUE, true);
+
+  if (waitingForClear) drawNeonText("NETTOYAGE...", WIDTH / 2, 60, 16, GREEN, 10);
+  if (slowTimer > 0) drawNeonText("RALENTI ACTIF", WIDTH / 2, HEIGHT - 150, 16, GREEN, 10);
 }
 
 // ============================================================
@@ -544,15 +816,30 @@ function drawUI() {
 function drawMenuScreen() {
   drawBlurredBackground();
 
-  drawNeonText("BLUE DODGE", WIDTH / 2, HEIGHT * 0.28, Math.min(72, WIDTH * 0.11), BLUE, 28, "center", 900);
-  drawNeonText("ESQUIVE OU DISPARAIS", WIDTH / 2, HEIGHT * 0.28 + Math.min(72, WIDTH * 0.11) * 0.62, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
+  drawNeonText("BLUE DODGE", WIDTH / 2, HEIGHT * 0.26, Math.min(72, WIDTH * 0.11), BLUE, 28, "center", 900);
+  drawNeonText("ESQUIVE OU DISPARAIS", WIDTH / 2, HEIGHT * 0.26 + Math.min(72, WIDTH * 0.11) * 0.62, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
 
-  drawNeonText("MEILLEUR NIVEAU : " + bestLevel, WIDTH / 2, HEIGHT * 0.46, Math.min(26, WIDTH * 0.04), GREEN, 10, "center", 700);
+  drawNeonText("MEILLEUR NIVEAU : " + bestLevel, WIDTH / 2, HEIGHT * 0.42, Math.min(24, WIDTH * 0.036), GREEN, 10, "center", 700);
+  drawNeonText("MEILLEUR SCORE : " + bestScore, WIDTH / 2, HEIGHT * 0.42 + Math.min(24, WIDTH * 0.036) * 1.5, Math.min(24, WIDTH * 0.036), WHITE, 10, "center", 700);
 
   drawNeonButton(playButton, "JOUER", RED, 0.4);
 
+  drawIconButton(muteButton, muted ? "X" : "S", muted ? GRAY : GREEN, !muted);
+
   drawNeonText(STUDIO_NAME, WIDTH / 2, HEIGHT - 46, 18, WHITE, 8, "center", 500);
   drawNeonText(GAME_VERSION, WIDTH - 20, HEIGHT - 20, 14, GRAY, 4, "right", 500);
+}
+
+// ============================================================
+// ECRAN PAUSE
+// ============================================================
+
+function drawPauseScreen() {
+  drawBlurredBackground();
+  drawNeonText("PAUSE", WIDTH / 2, HEIGHT * 0.30, Math.min(56, WIDTH * 0.08), BLUE, 24, "center", 900);
+  drawNeonText("Niveau " + level + " - Score " + Math.floor(score), WIDTH / 2, HEIGHT * 0.30 + Math.min(56, WIDTH * 0.08) * 0.8, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
+  drawNeonButton(restartButton, "REPRENDRE", GREEN, 0.30);
+  drawNeonButton(menuButton, "MENU", BLUE, 0.32);
 }
 
 // ============================================================
@@ -564,15 +851,46 @@ function drawEndScreen(won) {
 
   const titleColor = won ? GREEN : RED;
   const titleText = won ? "VICTOIRE !" : "GAME OVER";
-  drawNeonText(titleText, WIDTH / 2, HEIGHT * 0.30, Math.min(64, WIDTH * 0.09), titleColor, 26, "center", 900);
+  drawNeonText(titleText, WIDTH / 2, HEIGHT * 0.26, Math.min(64, WIDTH * 0.09), titleColor, 26, "center", 900);
 
   const subText = won ? "Tu as terminé les " + MAX_LEVEL + " niveaux !" : "Niveau atteint : " + level;
-  drawNeonText(subText, WIDTH / 2, HEIGHT * 0.30 + Math.min(64, WIDTH * 0.09) * 0.7, Math.min(22, WIDTH * 0.032), WHITE, 8, "center", 500);
+  drawNeonText(subText, WIDTH / 2, HEIGHT * 0.26 + Math.min(64, WIDTH * 0.09) * 0.7, Math.min(22, WIDTH * 0.032), WHITE, 8, "center", 500);
 
-  drawNeonText("MEILLEUR NIVEAU : " + bestLevel, WIDTH / 2, HEIGHT * 0.48, Math.min(22, WIDTH * 0.032), BLUE, 8, "center", 700);
+  drawNeonText("SCORE : " + Math.floor(score) + "   MEILLEUR : " + bestScore, WIDTH / 2, HEIGHT * 0.42, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 700);
+  drawNeonText("MEILLEUR NIVEAU : " + bestLevel, WIDTH / 2, HEIGHT * 0.42 + Math.min(20, WIDTH * 0.03) * 1.5, Math.min(20, WIDTH * 0.03), BLUE, 8, "center", 700);
 
   drawNeonButton(restartButton, "REJOUER", RED, 0.32);
   drawNeonButton(menuButton, "MENU", BLUE, 0.32);
+}
+
+// ============================================================
+// RENDU DE LA SCENE DE JEU (utilise en PLAYING et en PAUSED)
+// ============================================================
+
+function renderGameplay() {
+  ctx.fillStyle = BLACK;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  drawPowerups();
+
+  for (const e of enemies) neonRect(e.x, e.y, e.w, e.h, e.color, 14);
+
+  if (invincibleTimer <= 0 || Math.floor(invincibleTimer * 10) % 2 === 0) {
+    neonRect(player.x, player.y, player.w, player.h, RED, 20);
+  }
+
+  drawParticles();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, 1.5, WIDTH - 3, HEIGHT - 3);
+
+  drawUI();
+
+  drawArrow(buttonUp, "up");
+  drawArrow(buttonLeft, "left");
+  drawArrow(buttonDown, "down");
+  drawArrow(buttonRight, "right");
 }
 
 // ============================================================
@@ -594,11 +912,8 @@ function loop(now) {
   lastTime = now;
   if (dt > 0.05) dt = 0.05;
 
-  if (gameState === STATE_MENU) {
-    drawMenuScreen();
-    requestAnimationFrame(loop);
-    return;
-  }
+  if (gameState === STATE_MENU) { drawMenuScreen(); requestAnimationFrame(loop); return; }
+  if (gameState === STATE_PAUSED) { renderGameplay(); drawPauseScreen(); requestAnimationFrame(loop); return; }
   if (gameState === STATE_GAMEOVER || gameState === STATE_VICTORY) {
     drawEndScreen(gameState === STATE_VICTORY);
     requestAnimationFrame(loop);
@@ -620,11 +935,15 @@ function loop(now) {
   movingRight = movingRight || touch.right;
 
   // --------------------------------------------------------
-  // JOUEUR
+  // TIMERS
   // --------------------------------------------------------
   if (invincibleTimer > 0) invincibleTimer -= dt;
   if (respawnTimer > 0) respawnTimer -= dt;
+  if (slowTimer > 0) slowTimer -= dt;
 
+  // --------------------------------------------------------
+  // JOUEUR
+  // --------------------------------------------------------
   if (respawnTimer <= 0) {
     let mx = 0, my = 0;
     if (movingLeft) mx -= 1;
@@ -640,6 +959,11 @@ function loop(now) {
   }
 
   // --------------------------------------------------------
+  // SCORE (survie)
+  // --------------------------------------------------------
+  score += dt * 12;
+
+  // --------------------------------------------------------
   // BORDURE
   // --------------------------------------------------------
   const innerLeft = 3, innerTop = 3, innerRight = WIDTH - 3, innerBottom = HEIGHT - 3;
@@ -647,37 +971,53 @@ function loop(now) {
     player.x + player.w > innerRight || player.y + player.h > innerBottom;
 
   if (outOfBounds && invincibleTimer <= 0) {
-    lives -= 1;
-    respawnPlayerSafe();
-    invincibleTimer = INVINCIBLE_TIME;
-    respawnTimer = RESPAWN_DELAY;
+    loseLife();
     if (lives <= 0) { endGame(false); requestAnimationFrame(loop); return; }
   }
 
   // --------------------------------------------------------
-  // ENNEMIS - DEPLACEMENT
+  // ENNEMIS - DEPLACEMENT + VIRAGES ROSES
   // --------------------------------------------------------
-  for (const e of enemies) { e.x += e.dx * dt; e.y += e.dy * dt; }
+  const speedMul = slowTimer > 0 ? SLOW_FACTOR : 1;
+  for (const e of enemies) {
+    e.x += e.dx * dt * speedMul;
+    e.y += e.dy * dt * speedMul;
+    if (e.type === "pink" && e.turnsLeft > 0) {
+      e.turnTimer -= dt;
+      if (e.turnTimer <= 0) turnPinkEnemy(e);
+    }
+  }
 
   // --------------------------------------------------------
-  // COLLISION
+  // COLLISION ENNEMIS
   // --------------------------------------------------------
   if (invincibleTimer <= 0) {
     let collision = false;
     for (const e of enemies) { if (rectsOverlap(player, e)) { collision = true; break; } }
     if (collision) {
-      lives -= 1;
-      respawnPlayerSafe();
-      invincibleTimer = INVINCIBLE_TIME;
-      respawnTimer = RESPAWN_DELAY;
+      loseLife();
       if (lives <= 0) { endGame(false); requestAnimationFrame(loop); return; }
     }
   }
 
   // --------------------------------------------------------
+  // POWER-UPS
+  // --------------------------------------------------------
+  updatePowerups(dt);
+  for (const p of powerups) {
+    if (rectsOverlap(player, p)) { applyPowerup(p); p.life = 0; }
+  }
+  powerups = powerups.filter((p) => p.life > 0);
+
+  // --------------------------------------------------------
+  // PARTICULES
+  // --------------------------------------------------------
+  updateParticles(dt);
+
+  // --------------------------------------------------------
   // SUPPRESSION DES ENNEMIS HORS ECRAN
   // --------------------------------------------------------
-  enemies = enemies.filter(e => !(e.x + e.w < 0 || e.x > WIDTH || e.y + e.h < 0 || e.y > HEIGHT));
+  enemies = enemies.filter((e) => !(e.x + e.w < 0 || e.x > WIDTH || e.y + e.h < 0 || e.y > HEIGHT));
 
   // --------------------------------------------------------
   // PROGRESSION
@@ -689,7 +1029,10 @@ function loop(now) {
   } else if (enemies.length === 0) {
     if (level < MAX_LEVEL) {
       level += 1;
-      updateBestLevel();
+      score += 150;
+      updateBests();
+      sfxLevelUp();
+      spawnParticles(WIDTH / 2, HEIGHT / 2, GREEN, 26);
       levelTimer = 0.0;
       waitingForClear = false;
       respawnPlayerSafe();
@@ -713,25 +1056,7 @@ function loop(now) {
   // --------------------------------------------------------
   // AFFICHAGE
   // --------------------------------------------------------
-  ctx.fillStyle = BLACK;
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
-
-  for (const e of enemies) neonRect(e.x, e.y, e.w, e.h, e.color, 14);
-
-  if (invincibleTimer <= 0 || Math.floor(invincibleTimer * 10) % 2 === 0) {
-    neonRect(player.x, player.y, player.w, player.h, RED, 20);
-  }
-
-  ctx.strokeStyle = "rgba(255,255,255,0.5)";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, WIDTH - 3, HEIGHT - 3);
-
-  drawUI();
-
-  drawArrow(buttonUp, "up");
-  drawArrow(buttonLeft, "left");
-  drawArrow(buttonDown, "down");
-  drawArrow(buttonRight, "right");
+  renderGameplay();
 
   requestAnimationFrame(loop);
 }
