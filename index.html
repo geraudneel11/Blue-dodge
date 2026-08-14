@@ -254,6 +254,13 @@ let menuButton = {};
 let muteButton = {};
 let pauseButton = {};
 
+// Positions de texte calculees dynamiquement (voir computeLayout) pour
+// garantir un espacement minimum et empecher tout chevauchement, quelle
+// que soit la taille d'ecran.
+let menuTitleY, menuSubtitleY, menuBestScoreY, menuStudioY, menuVersionY;
+let pauseTitleY, pauseSubY;
+let endTitleY, endSubY, endScoreY;
+
 function computeLayout() {
   buttonUp = { x: BUTTON_MARGIN + BUTTON_SIZE, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE * 2, w: BUTTON_SIZE, h: BUTTON_SIZE };
   buttonLeft = { x: BUTTON_MARGIN, y: HEIGHT - BUTTON_MARGIN - BUTTON_SIZE, w: BUTTON_SIZE, h: BUTTON_SIZE };
@@ -262,17 +269,65 @@ function computeLayout() {
 
   const pbW = Math.min(320, WIDTH * 0.5);
   const pbH = 74;
-  playButton = { x: WIDTH / 2 - pbW / 2, y: HEIGHT * 0.62, w: pbW, h: pbH };
 
   const rbW = Math.min(280, WIDTH * 0.42);
   const rbH = 68;
   const gap = 22;
-  restartButton = { x: WIDTH / 2 - rbW - gap / 2, y: HEIGHT * 0.62, w: rbW, h: rbH };
-  menuButton = { x: WIDTH / 2 + gap / 2, y: HEIGHT * 0.62, w: rbW, h: rbH };
 
   muteButton = { x: WIDTH - 16 - 44 - 44 - 10, y: 14, w: 44, h: 44 };
   pauseButton = { x: WIDTH - 16 - 44, y: 14, w: 44, h: 44 };
+
+  // --- ECRAN MENU : empile titre / sous-titre / meilleur score / bouton
+  // JOUER / nom du studio / version, chacun avec un espace minimum fixe
+  // (en px) en plus de l'espace proportionnel a la taille des textes,
+  // pour ne jamais se chevaucher meme sur un ecran bas (paysage court).
+  const menuTitleSize = Math.min(72, WIDTH * 0.11);
+  const menuSubSize = Math.min(20, WIDTH * 0.03);
+  const menuBestSize = Math.min(24, WIDTH * 0.036);
+  const MIN_GAP = 12;
+
+  menuTitleY = HEIGHT * 0.20;
+  menuSubtitleY = menuTitleY + menuTitleSize * 0.5 + menuSubSize * 0.5 + MIN_GAP;
+  menuBestScoreY = menuSubtitleY + menuSubSize * 0.5 + menuBestSize * 0.5 + MIN_GAP;
+
+  // playButton.y est le HAUT du rectangle (pas son centre) : il doit
+  // se trouver sous le bas du texte "meilleur score" + une marge.
+  const minPlayTop = menuBestScoreY + menuBestSize * 0.5 + MIN_GAP;
+  let playTop = Math.max(HEIGHT * 0.62, minPlayTop);
+  // Laisse assez de place en dessous pour le nom du studio + la version ;
+  // sur un ecran bas, on rapproche plutot le bouton du texte au-dessus.
+  playTop = Math.min(playTop, HEIGHT - pbH - 64);
+  if (playTop < minPlayTop) playTop = minPlayTop;
+  playButton = { x: WIDTH / 2 - pbW / 2, y: playTop, w: pbW, h: pbH };
+
+  const playBottom = playTop + pbH;
+  menuStudioY = Math.min(Math.max(HEIGHT - 46, playBottom + 26), HEIGHT - 14);
+  menuVersionY = Math.min(Math.max(HEIGHT - 20, menuStudioY + 18), HEIGHT - 6);
+
+  // --- ECRAN PAUSE
+  const pauseTitleSize = Math.min(56, WIDTH * 0.08);
+  const pauseSubSize = Math.min(20, WIDTH * 0.03);
+  pauseTitleY = HEIGHT * 0.26;
+  pauseSubY = pauseTitleY + pauseTitleSize * 0.5 + pauseSubSize * 0.5 + MIN_GAP;
+
+  // --- ECRAN FIN DE PARTIE (game over / victoire)
+  const endTitleSize = Math.min(64, WIDTH * 0.09);
+  const endSubSize = Math.min(22, WIDTH * 0.032);
+  const endScoreSize = Math.min(20, WIDTH * 0.03);
+  endTitleY = HEIGHT * 0.20;
+  endSubY = endTitleY + endTitleSize * 0.5 + endSubSize * 0.5 + MIN_GAP;
+  endScoreY = endSubY + endSubSize * 0.5 + endScoreSize * 0.5 + MIN_GAP;
+
+  // --- BOUTONS PARTAGES restartButton / menuButton (pause + fin de partie) :
+  // restartButton.y / menuButton.y est le HAUT du rectangle. Il doit se
+  // trouver sous le texte le plus exigeant (l'ecran de fin, 3 lignes).
+  const minSharedBtnTop = endScoreY + endScoreSize * 0.5 + MIN_GAP;
+  const sharedBtnY = Math.max(HEIGHT * 0.62, minSharedBtnTop);
+  restartButton = { x: WIDTH / 2 - rbW - gap / 2, y: sharedBtnY, w: rbW, h: rbH };
+  menuButton = { x: WIDTH / 2 + gap / 2, y: sharedBtnY, w: rbW, h: rbH };
 }
+
+
 
 // ============================================================
 // ETAT DE PARTIE
@@ -947,17 +1002,17 @@ function drawUI() {
 function drawMenuScreen() {
   drawBlurredBackground();
 
-  drawNeonText("BLUE DODGE", WIDTH / 2, HEIGHT * 0.26, Math.min(72, WIDTH * 0.11), BLUE, 28, "center", 900);
-  drawNeonText("ESQUIVE OU DISPARAIS", WIDTH / 2, HEIGHT * 0.26 + Math.min(72, WIDTH * 0.11) * 0.62, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
+  drawNeonText("BLUE DODGE", WIDTH / 2, menuTitleY, Math.min(72, WIDTH * 0.11), BLUE, 28, "center", 900);
+  drawNeonText("ESQUIVE OU DISPARAIS", WIDTH / 2, menuSubtitleY, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
 
-  drawNeonText("MEILLEUR SCORE : " + bestScore, WIDTH / 2, HEIGHT * 0.42, Math.min(24, WIDTH * 0.036), WHITE, 10, "center", 700);
+  drawNeonText("MEILLEUR SCORE : " + bestScore, WIDTH / 2, menuBestScoreY, Math.min(24, WIDTH * 0.036), WHITE, 10, "center", 700);
 
   drawNeonButton(playButton, "JOUER", RED, 0.4);
 
   drawIconButton(muteButton, muted ? "X" : "S", muted ? GRAY : GREEN, !muted);
 
-  drawNeonText(STUDIO_NAME, WIDTH / 2, HEIGHT - 46, 18, WHITE, 8, "center", 500);
-  drawNeonText(GAME_VERSION, WIDTH - 20, HEIGHT - 20, 14, GRAY, 4, "right", 500);
+  drawNeonText(STUDIO_NAME, WIDTH / 2, menuStudioY, 18, WHITE, 8, "center", 500);
+  drawNeonText(GAME_VERSION, WIDTH - 20, menuVersionY, 14, GRAY, 4, "right", 500);
 }
 
 // ============================================================
@@ -966,8 +1021,8 @@ function drawMenuScreen() {
 
 function drawPauseScreen() {
   drawBlurredBackground();
-  drawNeonText("PAUSE", WIDTH / 2, HEIGHT * 0.30, Math.min(56, WIDTH * 0.08), BLUE, 24, "center", 900);
-  drawNeonText("Niveau " + level + " - Score " + Math.floor(score), WIDTH / 2, HEIGHT * 0.30 + Math.min(56, WIDTH * 0.08) * 0.8, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
+  drawNeonText("PAUSE", WIDTH / 2, pauseTitleY, Math.min(56, WIDTH * 0.08), BLUE, 24, "center", 900);
+  drawNeonText("Niveau " + level + " - Score " + Math.floor(score), WIDTH / 2, pauseSubY, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 500);
   drawNeonButton(restartButton, "REPRENDRE", GREEN, 0.30);
   drawNeonButton(menuButton, "MENU", BLUE, 0.32);
 }
@@ -981,12 +1036,12 @@ function drawEndScreen(won) {
 
   const titleColor = won ? GREEN : RED;
   const titleText = won ? "VICTOIRE !" : "GAME OVER";
-  drawNeonText(titleText, WIDTH / 2, HEIGHT * 0.26, Math.min(64, WIDTH * 0.09), titleColor, 26, "center", 900);
+  drawNeonText(titleText, WIDTH / 2, endTitleY, Math.min(64, WIDTH * 0.09), titleColor, 26, "center", 900);
 
   const subText = won ? "Tu as terminé les " + MAX_LEVEL + " niveaux !" : "Score final";
-  drawNeonText(subText, WIDTH / 2, HEIGHT * 0.26 + Math.min(64, WIDTH * 0.09) * 0.7, Math.min(22, WIDTH * 0.032), WHITE, 8, "center", 500);
+  drawNeonText(subText, WIDTH / 2, endSubY, Math.min(22, WIDTH * 0.032), WHITE, 8, "center", 500);
 
-  drawNeonText("SCORE : " + Math.floor(score) + "   MEILLEUR : " + bestScore, WIDTH / 2, HEIGHT * 0.42, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 700);
+  drawNeonText("SCORE : " + Math.floor(score) + "   MEILLEUR : " + bestScore, WIDTH / 2, endScoreY, Math.min(20, WIDTH * 0.03), WHITE, 8, "center", 700);
 
   drawNeonButton(restartButton, "REJOUER", RED, 0.32);
   drawNeonButton(menuButton, "MENU", BLUE, 0.32);
